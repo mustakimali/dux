@@ -77,10 +77,14 @@ fn size_of(path: &path::Path) -> Stats {
     stat.clone().lock().unwrap().clone()
 }
 
-fn receiver(_: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
-    while let Ok(path) = r.recv_timeout(Duration::from_millis(500)) {
+#[allow(unused_variables)]
+fn receiver(idx: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
+    while let Ok(path) = r.recv_timeout(Duration::from_millis(50)) {
         walk(&path, p, c);
     }
+
+    #[cfg(debug_assertions)]
+    println!("Thread#{} ended", idx);
 }
 
 fn walk(path: &path::Path, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
