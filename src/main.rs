@@ -58,13 +58,6 @@ impl<'a> std::iter::Sum<&'a Stats> for Stats {
     }
 }
 
-#[cfg(debug_assertions)]
-impl Drop for Stats {
-    fn drop(&mut self) {
-        println!("Drop {}", self);
-    }
-}
-
 fn main() {
     let current_path = env::current_dir()
         .expect("")
@@ -89,8 +82,10 @@ fn main() {
         // println!("Total size is {} bytes ({})", size, convert(size));
 
         // Multi threaded
-        let threads = num_cpus::get();
-        let stat = size_of_dir(path, threads);
+        let cores = num_cpus::get().to_string();
+        let threads = std::env::var("WORKERS").unwrap_or(cores);
+        let stat = size_of_dir(path, threads.parse().unwrap());
+
         println!("Total size is {}", stat);
     } else {
         eprintln!("Unknown type {}", target);
@@ -103,17 +98,21 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     {
         let (producer, rx) = unbounded();
 
-        for idx in 1..num_threads {
+        for idx in 0..num_threads {
             let producer = producer.clone();
             let rx = rx.clone();
 
-            consumers.push(std::thread::spawn(move || {
-                receiver(idx, rx, &producer)
-            }));
+            consumers.push(std::thread::spawn(move || receiver(idx, rx, &producer)));
         }
 
+        #[cfg(debug_assertions)]
+        println!("Total {} worker spwaned", consumers.len());
+
         // walk the root folder
-        stats.push(walk(path, &producer.clone()));
+        stats.push(walk(path, &producer));
+
+        #[cfg(debug_assertions)]
+        println!("Total {} items in queue", producer.len());
     }
 
     // wait for all receiver to finish
@@ -131,6 +130,9 @@ fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(2)) {
         let newstat = walk(&path, sender);
         stat += newstat;
+
+        #[cfg(debug_assertions)]
+        println!("#{} - {}", idx, &path.to_str().unwrap());
     }
 
     #[cfg(debug_assertions)]
@@ -140,9 +142,6 @@ fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -
 }
 
 fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
-    #[cfg(debug_assertions)]
-    println!("{}", path.to_str().unwrap());
-
     let mut stat = Stats::default();
 
     // Optimisation
@@ -156,7 +155,6 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
             //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
             stat.add_file(&path).unwrap();
         } else if path.is_dir() {
-            //sender.send(path).unwrap();
             sender.try_send(path).unwrap();
         }
     }
