@@ -1,9 +1,10 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert;
+use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{env, future, path};
+use std::{env, path};
 
 fn main() {
     let current_path = env::current_dir()
@@ -22,26 +23,43 @@ fn main() {
     } else if path.is_file() {
         todo!("Handling file");
     } else if path.is_dir() {
-        let size: f64 = size_of(path) as f64;
+        let stat = size_of(path);
         //let size: f64 = size_of_dir(path) as f64;
         //let size: f64 = size_of_dir2(&PathBuf::from_str(target).unwrap()) as f64;
-        println!("Total size is {} bytes ({})", size, convert(size));
+        println!("Total size is {}", stat);
     } else {
         todo!("Unknown type");
     }
 }
 
-fn size_of(path: &path::Path) -> u64 {
-    let size = Arc::from(Mutex::new(Box::from(0 as u64)));
+#[derive(Default, Clone)]
+struct Stats {
+    size: u64,
+    count: i32,
+}
+impl Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} bytes ({}) across {} items",
+            self.size,
+            convert(self.size as f64),
+            self.count
+        )
+    }
+}
+
+fn size_of(path: &path::Path) -> Stats {
+    let stat = Arc::from(Mutex::new(Stats::default()));
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
         let producer = Box::new(producer);
 
-        for idx in 1..10 {
+        for idx in 1..5 {
             let producer = producer.clone();
             let rx = rx.clone();
-            let size = size.clone();
+            let size = stat.clone();
 
             consumers.push(std::thread::spawn(move || -> () {
                 let p = producer.as_ref().clone();
@@ -49,23 +67,23 @@ fn size_of(path: &path::Path) -> u64 {
             }));
         }
 
-        walk(path, &producer.as_ref().clone(), &size.clone().as_ref());
+        walk(path, &producer.as_ref().clone(), &stat.clone().as_ref());
     }
 
     for c in consumers {
         c.join().unwrap();
     }
 
-    *size.clone().lock().unwrap().as_ref()
+    stat.clone().lock().unwrap().clone()
 }
 
-fn receiver(_: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Box<u64>>) {
+fn receiver(_: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
     while let Ok(path) = r.recv_timeout(Duration::from_millis(500)) {
         walk(&path, p, c);
     }
 }
 
-fn walk(path: &path::Path, p: &Sender<PathBuf>, c: &Mutex<Box<u64>>) {
+fn walk(path: &path::Path, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
     if !path.is_dir() {
         return;
     }
@@ -77,9 +95,9 @@ fn walk(path: &path::Path, p: &Sender<PathBuf>, c: &Mutex<Box<u64>>) {
                 let size = path.metadata().unwrap().len();
                 {
                     let mut sum = c.lock().unwrap();
-                    let sum2 = sum.as_mut();
                     //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
-                    *sum2 = *sum2 + size;
+                    sum.size += size;
+                    sum.count += 1;
                 }
             } else if path.is_dir() {
                 p.send(path).expect("");
