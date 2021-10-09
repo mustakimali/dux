@@ -20,7 +20,7 @@ fn main() {
     if !path.exists() {
         eprintln!("Invalid path: {}", &target);
     } else if path.is_file() {
-        let stat = Stats::from_file(&path);
+        let stat = Stats::from_file(path);
         println!("Total size is {}", stat);
     } else if path.is_dir() {
         // Single threaded
@@ -73,13 +73,13 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
             let rx = rx.clone();
             let size = stat.clone();
 
-            consumers.push(std::thread::spawn(move || -> () {
+            consumers.push(std::thread::spawn(move || {
                 let p = producer.as_ref().clone();
                 receiver(idx, rx.clone(), &p, &size);
             }));
         }
 
-        walk(path, &producer.as_ref().clone(), &stat.clone().as_ref());
+        walk(path, &producer.as_ref().clone(), stat.as_ref());
     }
 
     // wait for all receiver to finish
