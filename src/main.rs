@@ -58,6 +58,13 @@ impl<'a> std::iter::Sum<&'a Stats> for Stats {
     }
 }
 
+#[cfg(debug_assertions)]
+impl Drop for Stats {
+    fn drop(&mut self) {
+        println!("Drop {}", self);
+    }
+}
+
 fn main() {
     let current_path = env::current_dir()
         .expect("")
@@ -95,20 +102,18 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
-        let producer = Box::new(producer);
 
         for idx in 1..num_threads {
             let producer = producer.clone();
             let rx = rx.clone();
 
             consumers.push(std::thread::spawn(move || {
-                let p = producer.as_ref().clone();
-                receiver(idx, rx, &p)
+                receiver(idx, rx, &producer)
             }));
         }
 
         // walk the root folder
-        stats.push(walk(path, &producer.as_ref().clone()));
+        stats.push(walk(path, &producer.clone()));
     }
 
     // wait for all receiver to finish
@@ -123,7 +128,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
 #[allow(unused_variables)]
 fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
     let mut stat = Stats::default();
-    while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
+    while let Ok(path) = receiver.recv_timeout(Duration::from_millis(2)) {
         let newstat = walk(&path, sender);
         stat += newstat;
     }
@@ -149,10 +154,10 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
         let path = entry.path();
         if path.is_file() {
             //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
-
             stat.add_file(&path).unwrap();
         } else if path.is_dir() {
-            sender.send(path).unwrap();
+            //sender.send(path).unwrap();
+            sender.try_send(path).unwrap();
         }
     }
     stat
