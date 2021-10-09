@@ -2,7 +2,8 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::{env, path};
+use std::time::Duration;
+use std::{env, future, path};
 
 fn main() {
     let current_path = env::current_dir()
@@ -32,29 +33,35 @@ fn main() {
 
 fn size_of(path: &path::Path) -> u64 {
     let size = Arc::from(Mutex::new(Box::from(0 as u64)));
-    let (producer, r1) = unbounded();
-    let producer = Box::new(producer);
-    let producer2 = producer.clone();
+    let mut consumers = Vec::new();
+    {
+        let (producer, rx) = unbounded();
+        let producer = Box::new(producer);
 
-    let s = size.clone();
+        for idx in 1..10 {
+            let producer = producer.clone();
+            let rx = rx.clone();
+            let size = size.clone();
 
-    let _ = std::thread::spawn(move || -> () {
-        let p = producer2.as_ref().clone();
-        receiver(r1.clone(), &p, &s);
-    });
+            consumers.push(std::thread::spawn(move || -> () {
+                let p = producer.as_ref().clone();
+                receiver(idx, rx.clone(), &p, &size);
+            }));
+        }
 
-    walk(path, &producer.as_ref().clone(), &size.clone().as_ref());
-    drop(&producer);
+        walk(path, &producer.as_ref().clone(), &size.clone().as_ref());
+    }
+
+    for c in consumers {
+        c.join().unwrap();
+    }
 
     *size.clone().lock().unwrap().as_ref()
 }
 
-fn receiver(r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Box<u64>>) {
-    while let Ok(path) = r.recv() {
+fn receiver(_: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Box<u64>>) {
+    while let Ok(path) = r.recv_timeout(Duration::from_millis(500)) {
         walk(&path, p, c);
-        if r.is_empty() {
-            break;
-        }
     }
 }
 
