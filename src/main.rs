@@ -2,9 +2,61 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, path};
+
+#[derive(Default, Clone)]
+struct Stats {
+    size: u64,
+    count: i32,
+}
+
+impl Stats {
+    fn from_file(p: &Path) -> Self {
+        Self {
+            size: p.metadata().unwrap().len(),
+            count: 1,
+        }
+    }
+
+    fn add_file(&mut self, p: &Path) -> Result<(), std::io::Error> {
+        let size = p.metadata()?.len();
+        self.count += 1;
+        self.size += size;
+
+        Ok(())
+    }
+}
+
+impl Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} bytes ({}) across {} items",
+            self.size,
+            convert(self.size as f64),
+            self.count
+        )
+    }
+}
+
+impl std::ops::AddAssign for Stats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.count += rhs.count;
+        self.size += rhs.size;
+    }
+}
+
+impl<'a> std::iter::Sum<&'a Stats> for Stats {
+    fn sum<I: Iterator<Item = &'a Stats>>(iter: I) -> Self {
+        let mut result = Self::default();
+        for stat in iter {
+            result.count += stat.count;
+            result.size += stat.size;
+        }
+        result
+    }
+}
 
 fn main() {
     let current_path = env::current_dir()
@@ -15,6 +67,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let target = args.get(1).unwrap_or(&current_path);
     let path = path::Path::new(target);
+
+    #[cfg(debug_assertions)]
     println!("Searching in path: {}", target);
 
     if !path.exists() {
@@ -36,33 +90,8 @@ fn main() {
     }
 }
 
-#[derive(Default, Clone)]
-struct Stats {
-    size: u64,
-    count: i32,
-}
-impl Stats {
-    fn from_file(p: &Path) -> Self {
-        Self {
-            size: p.metadata().unwrap().len(),
-            count: 1,
-        }
-    }
-}
-impl Display for Stats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} bytes ({}) across {} items",
-            self.size,
-            convert(self.size as f64),
-            self.count
-        )
-    }
-}
-
 fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
-    let stat = Arc::from(Mutex::new(Stats::default()));
+    let mut stats = Vec::new();
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
@@ -71,41 +100,46 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
         for idx in 1..num_threads {
             let producer = producer.clone();
             let rx = rx.clone();
-            let size = stat.clone();
 
             consumers.push(std::thread::spawn(move || {
                 let p = producer.as_ref().clone();
-                receiver(idx, rx.clone(), &p, &size);
+                receiver(idx, rx, &p)
             }));
         }
 
-        walk(path, &producer.as_ref().clone(), stat.as_ref());
+        // walk the root folder
+        stats.push(walk(path, &producer.as_ref().clone()));
     }
 
     // wait for all receiver to finish
     for c in consumers {
-        c.join().unwrap();
+        let stat = c.join().unwrap();
+        stats.push(stat);
     }
 
-    stat.clone().lock().unwrap().clone()
+    stats.iter().sum()
 }
 
 #[allow(unused_variables)]
-fn receiver(
-    idx: usize,
-    receiver: Receiver<PathBuf>,
-    sender: &Sender<PathBuf>,
-    stat: &Mutex<Stats>,
-) {
+fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
+    let mut stat = Stats::default();
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
-        walk(&path, sender, stat);
+        let newstat = walk(&path, sender);
+        stat += newstat;
     }
 
     #[cfg(debug_assertions)]
     println!("Thread#{} ended", idx);
+
+    stat
 }
 
-fn walk(path: &path::Path, sender: &Sender<PathBuf>, stat: &Mutex<Stats>) {
+fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
+    #[cfg(debug_assertions)]
+    println!("{}", path.to_str().unwrap());
+
+    let mut stat = Stats::default();
+
     // Optimisation
     // if !path.is_dir() {
     //     return;
@@ -114,17 +148,14 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>, stat: &Mutex<Stats>) {
     for entry in path.read_dir().expect("Read dir").flatten() {
         let path = entry.path();
         if path.is_file() {
-            let size = path.metadata().unwrap().len();
-            {
-                let mut sum = stat.lock().unwrap();
-                //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
-                sum.size += size;
-                sum.count += 1;
-            }
+            //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
+
+            stat.add_file(&path).unwrap();
         } else if path.is_dir() {
             sender.send(path).unwrap();
         }
     }
+    stat
 }
 
 #[allow(dead_code)]
