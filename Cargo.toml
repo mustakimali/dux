@@ -1,5 +1,5 @@
 [package]
-name = "size"
+name = "du_rs"
 version = "0.1.0"
 edition = "2018"
 
@@ -8,3 +8,4 @@ edition = "2018"
 [dependencies]
 pretty-bytes = "0.2.2"
 crossbeam-channel = "0.5.1"
+num_cpus = "1.13.0"

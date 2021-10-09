@@ -1,7 +1,7 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, path};
@@ -17,18 +17,22 @@ fn main() {
     let path = path::Path::new(target);
     println!("Searching in path: {}", target);
 
-    // handle file
     if !path.exists() {
         eprintln!("Invalid path: {}", &target);
     } else if path.is_file() {
-        todo!("Handling file");
+        let stat = Stats::from_file(&path);
+        println!("Total size is {}", stat);
     } else if path.is_dir() {
-        let stat = size_of(path);
-        //let size: f64 = size_of_dir(path) as f64;
-        //let size: f64 = size_of_dir2(&PathBuf::from_str(target).unwrap()) as f64;
+        // Single threaded
+        // let size: f64 = size_of_dir_single_threaded(path) as f64;
+        // println!("Total size is {} bytes ({})", size, convert(size));
+
+        // Multi threaded
+        let threads = num_cpus::get();
+        let stat = size_of_dir(path, threads);
         println!("Total size is {}", stat);
     } else {
-        todo!("Unknown type");
+        eprintln!("Unknown type {}", target);
     }
 }
 
@@ -36,6 +40,14 @@ fn main() {
 struct Stats {
     size: u64,
     count: i32,
+}
+impl Stats {
+    fn from_file(p: &Path) -> Self {
+        Self {
+            size: p.metadata().unwrap().len(),
+            count: 1,
+        }
+    }
 }
 impl Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,14 +61,14 @@ impl Display for Stats {
     }
 }
 
-fn size_of(path: &path::Path) -> Stats {
+fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     let stat = Arc::from(Mutex::new(Stats::default()));
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
         let producer = Box::new(producer);
 
-        for idx in 1..5 {
+        for idx in 1..num_threads {
             let producer = producer.clone();
             let rx = rx.clone();
             let size = stat.clone();
@@ -70,6 +82,7 @@ fn size_of(path: &path::Path) -> Stats {
         walk(path, &producer.as_ref().clone(), &stat.clone().as_ref());
     }
 
+    // wait for all receiver to finish
     for c in consumers {
         c.join().unwrap();
     }
@@ -78,53 +91,55 @@ fn size_of(path: &path::Path) -> Stats {
 }
 
 #[allow(unused_variables)]
-fn receiver(idx: i32, r: Receiver<PathBuf>, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
-    while let Ok(path) = r.recv_timeout(Duration::from_millis(50)) {
-        walk(&path, p, c);
+fn receiver(
+    idx: usize,
+    receiver: Receiver<PathBuf>,
+    sender: &Sender<PathBuf>,
+    stat: &Mutex<Stats>,
+) {
+    while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
+        walk(&path, sender, stat);
     }
 
     #[cfg(debug_assertions)]
     println!("Thread#{} ended", idx);
 }
 
-fn walk(path: &path::Path, p: &Sender<PathBuf>, c: &Mutex<Stats>) {
-    if !path.is_dir() {
-        return;
-    }
+fn walk(path: &path::Path, sender: &Sender<PathBuf>, stat: &Mutex<Stats>) {
+    // Optimisation
+    // if !path.is_dir() {
+    //     return;
+    // }
 
-    for item in path.read_dir().expect("Read dir") {
-        if let Ok(entry) = item {
-            let path = entry.path();
-            if path.is_file() {
-                let size = path.metadata().unwrap().len();
-                {
-                    let mut sum = c.lock().unwrap();
-                    //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
-                    sum.size += size;
-                    sum.count += 1;
-                }
-            } else if path.is_dir() {
-                p.send(path).expect("");
+    for entry in path.read_dir().expect("Read dir").flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let size = path.metadata().unwrap().len();
+            {
+                let mut sum = stat.lock().unwrap();
+                //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
+                sum.size += size;
+                sum.count += 1;
             }
+        } else if path.is_dir() {
+            sender.send(path).unwrap();
         }
     }
 }
 
 #[allow(dead_code)]
-fn size_of_dir(path: &path::Path) -> u64 {
+fn size_of_dir_single_threaded(path: &path::Path) -> u64 {
     if !path.is_dir() {
         return 0;
     }
 
     let mut count = 0;
-    for item in path.read_dir().expect("Read dir") {
-        if let Ok(entry) = item {
-            let path = entry.path();
-            if path.is_file() {
-                count += path.metadata().unwrap().len();
-            } else if path.is_dir() {
-                count += size_of_dir(&path);
-            }
+    for entry in path.read_dir().expect("Read dir").flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            count += path.metadata().unwrap().len();
+        } else if path.is_dir() {
+            count += size_of_dir_single_threaded(&path);
         }
     }
     count

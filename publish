@@ -1,0 +1,4 @@
+#!/bin/bash
+
+cargo build --release
+mv target/release/du_rs ~/bin/
