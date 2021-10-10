@@ -1,5 +1,5 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use pretty_bytes::converter::convert;
+use pretty_bytes::converter::convert as humanize_byte;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -34,7 +34,7 @@ impl Display for Stats {
             f,
             "{} bytes ({}) across {} items",
             self.size,
-            convert(self.size as f64),
+            humanize_byte(self.size as f64),
             self.count
         )
     }
