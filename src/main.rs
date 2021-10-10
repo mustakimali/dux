@@ -127,7 +127,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
 #[allow(unused_variables)]
 fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
     let mut stat = Stats::default();
-    while let Ok(path) = receiver.recv_timeout(Duration::from_millis(2)) {
+    while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
         let newstat = walk(&path, sender);
         stat += newstat;
 
