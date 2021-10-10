@@ -1,5 +1,5 @@
 [package]
-name = "du_rs"
+name = "dux"
 version = "0.1.0"
 edition = "2018"
 

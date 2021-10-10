@@ -148,14 +148,17 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
     // if !path.is_dir() {
     //     return;
     // }
-
-    for entry in path.read_dir().expect("Read dir").flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            //println!("Inc {} + {} ({})", *sum2, size, path.to_str().unwrap());
-            stat.add_file(&path).unwrap();
-        } else if path.is_dir() {
-            sender.try_send(path).unwrap();
+    if let Err(e) = path.read_dir() {
+        eprintln!("Error {} ({})", e, path.to_str().unwrap());
+        return stat;
+    } else if let Ok(dir_items) = path.read_dir() {
+        for entry in dir_items.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                stat.add_file(&path).unwrap();
+            } else if path.is_dir() {
+                sender.try_send(path).unwrap();
+            }
         }
     }
     stat
