@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, path};
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 struct Stats {
     size: u64,
     count: i32,
