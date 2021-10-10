@@ -83,8 +83,8 @@ fn main() {
 
         // Multi threaded
         let cores = num_cpus::get().to_string();
-        let threads = std::env::var("WORKERS").unwrap_or(cores);
-        let stat = size_of_dir(path, threads.parse().unwrap());
+        let cores = std::env::var("WORKERS").unwrap_or(cores).parse().unwrap();
+        let stat = size_of_dir(path, cores);
 
         println!("Total size is {}", stat);
     } else {
@@ -102,7 +102,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
             let producer = producer.clone();
             let rx = rx.clone();
 
-            consumers.push(std::thread::spawn(move || receiver(idx, rx, &producer)));
+            consumers.push(std::thread::spawn(move || worker(idx, rx, &producer)));
         }
 
         #[cfg(debug_assertions)]
@@ -113,7 +113,9 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
 
         #[cfg(debug_assertions)]
         println!("Total {} items in queue", producer.len());
-    }
+    } // extra block so the channel is dropped early, 
+      // therefore all threads waiting for new message will encounter the
+      // exit codition and will run to the end.
 
     // wait for all receiver to finish
     for c in consumers {
@@ -125,7 +127,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
 }
 
 #[allow(unused_variables)]
-fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
+fn worker(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
     let mut stat = Stats::default();
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
         let newstat = walk(&path, sender);
@@ -144,7 +146,7 @@ fn receiver(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -
 fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
     let mut stat = Stats::default();
 
-    // Optimisation
+    // Optimisation (makes it faster)
     // if !path.is_dir() {
     //     return;
     // }
@@ -157,6 +159,7 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
             if path.is_file() {
                 stat.add_file(&path).unwrap();
             } else if path.is_dir() {
+                // publish message to the channel
                 sender.try_send(path).unwrap();
             }
         }
