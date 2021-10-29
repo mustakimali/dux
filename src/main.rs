@@ -132,9 +132,10 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     }
 
     println!("Largest files:");
+    let wd_len = path.to_str().unwrap().len() + 1;
     for (path, size) in largest_files.lock().unwrap().get()
     {
-        println!("{}\t{}", humanize_byte(size as f64), path);
+        println!("{}\t{}", humanize_byte(size as f64), &path[wd_len..]);
     }
     println!("");
 
