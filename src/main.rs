@@ -2,6 +2,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, path};
 
@@ -94,26 +95,32 @@ fn main() {
 
 fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     let mut stats = Vec::new();
+    let largest_files = Arc::new(Mutex::new(
+        priority_queue::PriorityQueue::<String, u64>::with_capacity(20),
+    ));
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
 
         for idx in 0..num_threads {
             let producer = producer.clone();
+            let largest_files = largest_files.clone();
             let rx = rx.clone();
 
-            consumers.push(std::thread::spawn(move || worker(idx, rx, &producer)));
+            consumers.push(std::thread::spawn(move || {
+                worker(idx, rx, &producer, &largest_files)
+            }));
         }
 
         #[cfg(debug_assertions)]
         println!("Total {} worker spwaned", consumers.len());
 
         // walk the root folder
-        stats.push(walk(path, &producer));
+        stats.push(walk(path, &producer, &largest_files));
 
         #[cfg(debug_assertions)]
         println!("Total {} items in queue", producer.len());
-    } // extra block so the channel is dropped early, 
+    } // extra block so the channel is dropped early,
       // therefore all threads waiting for new message will encounter the
       // exit codition and will run to the end.
 
@@ -123,14 +130,33 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
         stats.push(stat);
     }
 
+    println!("Largest files:");
+    for (path, size) in largest_files
+        .clone()
+        .as_ref()
+        .lock()
+        .unwrap()
+        .clone()
+        .into_sorted_iter()
+        .take(10)
+    {
+        println!("{}\t{}", humanize_byte(size as f64), path);
+    }
+    println!("");
+
     stats.iter().sum()
 }
 
 #[allow(unused_variables)]
-fn worker(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> Stats {
+fn worker(
+    idx: usize,
+    receiver: Receiver<PathBuf>,
+    sender: &Sender<PathBuf>,
+    f: &Arc<Mutex<priority_queue::PriorityQueue<String, u64>>>,
+) -> Stats {
     let mut stat = Stats::default();
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
-        let newstat = walk(&path, sender);
+        let newstat = walk(&path, sender, f);
         stat += newstat;
 
         #[cfg(debug_assertions)]
@@ -143,7 +169,11 @@ fn worker(idx: usize, receiver: Receiver<PathBuf>, sender: &Sender<PathBuf>) -> 
     stat
 }
 
-fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
+fn walk(
+    path: &path::Path,
+    sender: &Sender<PathBuf>,
+    f: &Arc<Mutex<priority_queue::PriorityQueue<String, u64>>>,
+) -> Stats {
     let mut stat = Stats::default();
 
     // Optimisation (makes it faster)
@@ -158,6 +188,11 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>) -> Stats {
             let path = entry.path();
             if path.is_file() {
                 stat.add_file(&path).unwrap();
+                let size = path.metadata().unwrap().len();
+                f.as_ref()
+                    .lock()
+                    .unwrap()
+                    .push(path.to_str().unwrap().into(), size);
             } else if path.is_dir() {
                 // publish message to the channel
                 sender.try_send(path).unwrap();

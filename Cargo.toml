@@ -10,3 +10,4 @@ lto = true
 pretty-bytes = "0.2.2"
 crossbeam-channel = "0.5.1"
 num_cpus = "1.13.0"
+priority-queue = "1.2.0"
