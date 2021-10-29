@@ -1,3 +1,4 @@
+use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
 use priority_queue::PriorityQueue;
@@ -8,6 +9,15 @@ use std::time::Duration;
 use std::{env, path};
 
 mod priority_queue;
+
+#[derive(Parser, Debug, Clone)]
+#[clap(name = "dux", version = clap::crate_version!(), version = clap::crate_version!(), author = clap::crate_authors!(), about = clap::crate_description!())]
+struct CliArg {
+    #[clap(short('l'), long, about("Lists top 10 largest files"))]
+    list_large_files: bool,
+    #[clap(about("The folder to use (default to current directory)"))]
+    path: Option<String>,
+}
 
 #[derive(Default)]
 struct Stats {
@@ -63,14 +73,16 @@ impl<'a> std::iter::Sum<&'a Stats> for Stats {
 }
 
 fn main() {
-    let current_path = env::current_dir()
-        .expect("")
-        .to_str()
-        .expect("")
-        .to_string();
-    let args: Vec<String> = env::args().collect();
-    let target = args.get(1).unwrap_or(&current_path);
-    let path = path::Path::new(target);
+    let cli_args = CliArg::parse();
+
+    let target = cli_args.path.clone().unwrap_or(
+        env::current_dir()
+            .expect("")
+            .to_str()
+            .expect("")
+            .to_string(),
+    );
+    let path = path::Path::new(&target);
 
     #[cfg(debug_assertions)]
     println!("Searching in path: {}", target);
@@ -88,7 +100,7 @@ fn main() {
         // Multi threaded
         let cores = num_cpus::get().to_string();
         let cores = std::env::var("WORKERS").unwrap_or(cores).parse().unwrap();
-        let stat = size_of_dir(path, cores);
+        let stat = size_of_dir(path, cores, &cli_args);
 
         println!("Total size is {}", stat);
     } else {
@@ -96,7 +108,7 @@ fn main() {
     }
 }
 
-fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
+fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
     let mut stats = Vec::new();
     let largest_files = Arc::new(Mutex::new(PriorityQueue::new(10)));
     let mut consumers = Vec::new();
@@ -106,21 +118,16 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
         for idx in 0..num_threads {
             let producer = producer.clone();
             let largest_files = largest_files.clone();
+            let track_lage_files = args.list_large_files;
             let rx = rx.clone();
 
             consumers.push(std::thread::spawn(move || {
-                worker(idx, rx, &producer, &largest_files)
+                worker(idx, rx, &producer, &largest_files, track_lage_files)
             }));
         }
 
-        #[cfg(debug_assertions)]
-        println!("Total {} worker spwaned", consumers.len());
-
         // walk the root folder
-        stats.push(walk(path, &producer, &largest_files));
-
-        #[cfg(debug_assertions)]
-        println!("Total {} items in queue", producer.len());
+        stats.push(walk(path, &producer, &largest_files, args.list_large_files));
     } // extra block so the channel is dropped early,
       // therefore all threads waiting for new message will encounter the
       // exit codition and will run to the end.
@@ -131,13 +138,14 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
         stats.push(stat);
     }
 
-    println!("Largest files:");
-    let wd_len = path.to_str().unwrap().len() + 1;
-    for (path, size) in largest_files.lock().unwrap().get()
-    {
-        println!("{}\t{}", humanize_byte(size as f64), &path[wd_len..]);
+    if args.list_large_files {
+        println!("Largest files:");
+        let wd_len = path.to_str().unwrap().len() + 1;
+        for (path, size) in largest_files.lock().unwrap().get() {
+            println!("{}\t{}", humanize_byte(size as f64), &path[wd_len..]);
+        }
+        println!("");
     }
-    println!("");
 
     stats.iter().sum()
 }
@@ -147,18 +155,24 @@ fn worker(
     idx: usize,
     receiver: Receiver<PathBuf>,
     sender: &Sender<PathBuf>,
-    f: &Arc<Mutex<PriorityQueue>>,
+    large_files: &Arc<Mutex<PriorityQueue>>,
+    track_large_files: bool,
 ) -> Stats {
     let mut stat = Stats::default();
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
-        let newstat = walk(&path, sender, f);
+        let newstat = walk(&path, sender, large_files, track_large_files);
         stat += newstat;
     }
 
     stat
 }
 
-fn walk(path: &path::Path, sender: &Sender<PathBuf>, f: &Arc<Mutex<PriorityQueue>>) -> Stats {
+fn walk(
+    path: &path::Path,
+    sender: &Sender<PathBuf>,
+    large_files: &Arc<Mutex<PriorityQueue>>,
+    track_large_files: bool,
+) -> Stats {
     let mut stat = Stats::default();
 
     // Optimisation (makes it faster)
@@ -173,11 +187,14 @@ fn walk(path: &path::Path, sender: &Sender<PathBuf>, f: &Arc<Mutex<PriorityQueue
             let path = entry.path();
             if path.is_file() {
                 stat.add_file(&path).unwrap();
-                let size = path.metadata().unwrap().len();
-                f.as_ref()
-                    .lock()
-                    .unwrap()
-                    .push(path.to_str().unwrap().into(), size);
+                if track_large_files {
+                    let size = path.metadata().unwrap().len();
+                    large_files
+                        .as_ref()
+                        .lock()
+                        .unwrap()
+                        .push(path.to_str().unwrap().into(), size);
+                }
             } else if path.is_dir() {
                 // publish message to the channel
                 sender.try_send(path).unwrap();
