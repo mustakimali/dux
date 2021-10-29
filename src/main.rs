@@ -75,13 +75,13 @@ impl<'a> std::iter::Sum<&'a Stats> for Stats {
 fn main() {
     let cli_args = CliArg::parse();
 
-    let target = cli_args.path.clone().unwrap_or(
+    let target = cli_args.path.clone().unwrap_or_else(|| {
         env::current_dir()
             .expect("")
             .to_str()
             .expect("")
-            .to_string(),
-    );
+            .to_string()
+    });
     let path = path::Path::new(&target);
 
     #[cfg(debug_assertions)]
@@ -144,7 +144,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
         for (path, size) in largest_files.lock().unwrap().get() {
             println!("{}\t{}", humanize_byte(size as f64), &path[wd_len..]);
         }
-        println!("");
+        println!();
     }
 
     stats.iter().sum()
