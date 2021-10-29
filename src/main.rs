@@ -1,10 +1,13 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
+use priority_queue::PriorityQueue;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, path};
+
+mod priority_queue;
 
 #[derive(Default)]
 struct Stats {
@@ -95,9 +98,7 @@ fn main() {
 
 fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     let mut stats = Vec::new();
-    let largest_files = Arc::new(Mutex::new(
-        priority_queue::PriorityQueue::<String, u64>::with_capacity(20),
-    ));
+    let largest_files = Arc::new(Mutex::new(PriorityQueue::new(10)));
     let mut consumers = Vec::new();
     {
         let (producer, rx) = unbounded();
@@ -131,14 +132,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize) -> Stats {
     }
 
     println!("Largest files:");
-    for (path, size) in largest_files
-        .clone()
-        .as_ref()
-        .lock()
-        .unwrap()
-        .clone()
-        .into_sorted_iter()
-        .take(10)
+    for (path, size) in largest_files.lock().unwrap().get()
     {
         println!("{}\t{}", humanize_byte(size as f64), path);
     }
@@ -152,28 +146,18 @@ fn worker(
     idx: usize,
     receiver: Receiver<PathBuf>,
     sender: &Sender<PathBuf>,
-    f: &Arc<Mutex<priority_queue::PriorityQueue<String, u64>>>,
+    f: &Arc<Mutex<PriorityQueue>>,
 ) -> Stats {
     let mut stat = Stats::default();
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
         let newstat = walk(&path, sender, f);
         stat += newstat;
-
-        #[cfg(debug_assertions)]
-        println!("#{} - {}", idx, &path.to_str().unwrap());
     }
-
-    #[cfg(debug_assertions)]
-    println!("Thread#{} ended", idx);
 
     stat
 }
 
-fn walk(
-    path: &path::Path,
-    sender: &Sender<PathBuf>,
-    f: &Arc<Mutex<priority_queue::PriorityQueue<String, u64>>>,
-) -> Stats {
+fn walk(path: &path::Path, sender: &Sender<PathBuf>, f: &Arc<Mutex<PriorityQueue>>) -> Stats {
     let mut stat = Stats::default();
 
     // Optimisation (makes it faster)
