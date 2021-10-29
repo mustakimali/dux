@@ -1,4 +1,4 @@
 #!/bin/bash
 
 cargo build --release
-mv target/release/dux ~/bin/
+mv target/release/dux ~/bin/dux
