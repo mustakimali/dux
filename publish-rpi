@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+
+# https://jakewharton.com/cross-compiling-static-rust-binaries-in-docker-for-raspberry-pi/
+# Install linker: sudo apt install gcc-arm-linux-gnueabihf
+TARGET=${1:-armv7-unknown-linux-musleabihf}
+cargo build --release --target=$TARGET
