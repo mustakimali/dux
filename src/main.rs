@@ -1,4 +1,5 @@
 use clap::Parser;
+use cli_table::{print_stdout, Style, Table};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
 use priority_queue::PriorityQueue;
@@ -141,9 +142,12 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
     if args.list_large_files {
         println!("Largest files:");
         let wd_len = path.to_str().unwrap().len() + 1;
+        let mut table_items = Vec::default();
         for (path, size) in largest_files.lock().unwrap().get() {
-            println!("{}\t{}", humanize_byte(size as f64), &path[wd_len..]);
+            table_items.push(vec![humanize_byte(size as f64), path[wd_len..].to_string()]);
         }
+        let table = table_items.table().title(vec!["Size", "File"]).bold(true);
+        print_stdout(table).expect("failed to print largest files");
         println!();
     }
 

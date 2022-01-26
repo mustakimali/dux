@@ -24,7 +24,11 @@ Total size is 586934311 bytes (586.93 MB) across 3372 items
 # list largest files
 $ dux -l
 Largest files:
-23.56 MB        {file1}
++----------+----------------+
+| Size     | File           |
++----------+----------------+
+| 23.56 MB | {file 1}       |
++----------+----------------+
 
 Total size is 586934311 bytes (586.93 MB) across 3372 items
 ```
