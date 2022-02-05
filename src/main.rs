@@ -144,7 +144,7 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
         let wd_len = path.to_str().unwrap().len() + 1;
         let mut table_items = Vec::default();
         for (path, size) in largest_files.lock().unwrap().get() {
-            table_items.push(vec![humanize_byte(size as f64), path[wd_len..].to_string()]);
+            table_items.push(vec![humanize_byte(size as f64), truncate(&path[wd_len..])]);
         }
         let table = table_items.table().title(vec!["Size", "File"]).bold(true);
         print_stdout(table).expect("failed to print largest files");
@@ -152,6 +152,21 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
     }
 
     stats.iter().sum()
+}
+
+fn truncate(path: &str) -> String {
+    const MAX_WIDTH: usize = 80;
+    if path.len() <= MAX_WIDTH {
+        return path.to_string();
+    }
+    let mid = std::cmp::min(path.len() / 2, MAX_WIDTH / 2);
+
+    let mut result = String::new();
+    result.push_str(&path[..mid]);
+    result.push_str("...");
+    result.push_str(&path[path.len() - mid..]);
+
+    result
 }
 
 #[allow(unused_variables)]

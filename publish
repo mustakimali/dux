@@ -1,8 +1,4 @@
 #!/bin/bash
 
-cargo build --release
-if command -v upx &> /dev/null
-then
-    upx -9 target/release/dux || true
-fi
+RUSTFLAGS="-C target-cpu=native" cargo build --release
 mv target/release/dux ~/bin/dux
