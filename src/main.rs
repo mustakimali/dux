@@ -27,7 +27,7 @@ struct CliArg {
 struct Stats {
     size: u64,
     count: i32,
-    ext: HashMap<String, u64>,
+    ext: HashMap<String, (u64, u64)>, // (size, count)
     track_ext: bool,
 }
 
@@ -79,8 +79,9 @@ impl Stats {
                     // add or update size in the hashmap;
                     let ext = ext.to_string();
 
-                    let size = self.ext.get(&ext).unwrap_or(&0) + meta.len();
-                    self.ext.insert(ext.to_string(), size);
+                    let (size, count) = self.ext.get(&ext).unwrap_or(&(0, 0));
+                    let info = (size + meta.len(), count + 1);
+                    self.ext.insert(ext.to_string(), info);
                 }
             }
         }
@@ -89,33 +90,32 @@ impl Stats {
 
 impl Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} bytes ({}) across {} items",
-            self.size,
-            humanize_byte(self.size as f64),
-            self.count
-        )?;
-
         if self.track_ext && !self.ext.is_empty() {
-            writeln!(f)?;
-            writeln!(f)?;
-
             let mut sorted_ext: Vec<_> = self.ext.iter().collect();
             sorted_ext.sort_by(|a, b| b.1.cmp(a.1));
 
             let mut table_items = Vec::default();
-            for (ext, size) in sorted_ext {
-                table_items.push(vec![ext.clone(), humanize_byte(*size as f64)]);
+            for (ext, (size, count)) in sorted_ext {
+                table_items.push(vec![
+                    ext.clone(),
+                    count.to_string(),
+                    humanize_byte(*size as f64),
+                ]);
             }
             let table = table_items
                 .table()
-                .title(vec!["Extension", "Size"])
+                .title(vec!["Extension", "#", "Size"])
                 .bold(true);
             print_stdout(table).expect("failed to print table");
         }
 
-        write!(f, "")
+        write!(
+            f,
+            "Total size is {} bytes ({}) across {} items",
+            self.size,
+            humanize_byte(self.size as f64),
+            self.count
+        )
     }
 }
 
@@ -124,9 +124,10 @@ impl std::ops::AddAssign for Stats {
         self.count += rhs.count;
         self.size += rhs.size;
         if !rhs.ext.is_empty() {
-            for (ext, size) in &rhs.ext {
-                let size = self.ext.get(ext).unwrap_or(&0) + size;
-                self.ext.insert(ext.clone(), size);
+            for (ext, (size_e, count_e)) in &rhs.ext {
+                let (size_, count_) = rhs.ext.get(ext).unwrap_or(&(0, 0));
+                let info = (size_ + size_e, count_ + count_e);
+                self.ext.insert(ext.clone(), info);
             }
         }
     }
@@ -139,9 +140,10 @@ impl<'a> std::iter::Sum<&'a Stats> for Stats {
             result.count += stat.count;
             result.size += stat.size;
             if !stat.ext.is_empty() {
-                for (ext, size) in &stat.ext {
-                    let size = result.ext.get(ext).unwrap_or(&0) + size;
-                    result.ext.insert(ext.clone(), size);
+                for (ext, (size_e, count_e)) in &stat.ext {
+                    let (size_, count_) = result.ext.get(ext).unwrap_or(&(0, 0));
+                    let info = (size_ + size_e, count_ + count_e);
+                    result.ext.insert(ext.clone(), info);
                 }
             }
         }
@@ -168,18 +170,18 @@ fn main() {
         eprintln!("Invalid path: {}", &target);
     } else if path.is_file() {
         let stat = Stats::from_file(path, cli_args.group_extensions);
-        println!("Total size is {}", stat);
+        println!("{}", stat);
     } else if path.is_dir() {
         // Single threaded
         // let size: f64 = size_of_dir_single_threaded(path) as f64;
-        // println!("Total size is {} bytes ({})", size, convert(size));
+        // println!("{} bytes ({})", size, convert(size));
 
         // Multi threaded
         let cores = num_cpus::get().to_string();
         let cores = std::env::var("WORKERS").unwrap_or(cores).parse().unwrap();
         let stat = size_of_dir(path, cores, &cli_args);
 
-        println!("Total size is {}", stat);
+        println!("{}", stat);
     } else {
         eprintln!("Unknown type {}", target);
     }
