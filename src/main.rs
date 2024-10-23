@@ -107,6 +107,7 @@ impl Display for Stats {
                 .title(vec!["Extension", "#", "Size"])
                 .bold(true);
             print_stdout(table).expect("failed to print table");
+            writeln!(f)?;
         }
 
         write!(
