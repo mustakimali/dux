@@ -14,13 +14,18 @@ use std::{env, path};
 mod priority_queue;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "dux", version = clap::crate_version!(), version = clap::crate_version!(), author = clap::crate_authors!(), about = clap::crate_description!())]
+#[clap(name = "dux")]
 struct CliArg {
-    #[clap(short('l'), long, about("Lists top 10 largest files"))]
+    /// Lists top 10 largest files
+    #[clap(short('l'), long)]
     list_large_files: bool,
-    #[clap(short('g'), long, about("Output space usage for each file extension"))]
+
+    /// Group files by extension
+    #[clap(short('g'), long)]
     group_extensions: bool,
-    #[clap(about("The folder to use (default to current directory)"))]
+
+    /// The folder to use (default to current directory)
+    #[clap(name = "path")]
     path: Option<String>,
 }
 
