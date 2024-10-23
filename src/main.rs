@@ -123,6 +123,12 @@ impl std::ops::AddAssign for Stats {
     fn add_assign(&mut self, rhs: Self) {
         self.count += rhs.count;
         self.size += rhs.size;
+        if !rhs.ext.is_empty() {
+            for (ext, size) in &rhs.ext {
+                let size = self.ext.get(ext).unwrap_or(&0) + size;
+                self.ext.insert(ext.clone(), size);
+            }
+        }
     }
 }
 
@@ -265,7 +271,7 @@ fn worker(
     track_large_files: bool,
     track_ext: bool,
 ) -> Stats {
-    let mut stat = Stats::new_empty();
+    let mut stat = Stats::new(track_ext);
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
         let newstat = walk(&path, sender, large_files, track_large_files, track_ext);
         stat += newstat;
