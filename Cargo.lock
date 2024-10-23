@@ -124,7 +124,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dux"
+name = "duxx"
 version = "0.2.4"
 dependencies = [
  "clap",

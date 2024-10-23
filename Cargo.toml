@@ -1,11 +1,14 @@
 [package]
-name = "dux"
+name = "duxx"
 description = "Calculate disk space used by a folder"
 version = "0.2.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mustakimali/dux"
 
+[[bin]]
+name = "dux"
+path = "src/main.rs"
 
 [dependencies]
 pretty-bytes = "0.2"
