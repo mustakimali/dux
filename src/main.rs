@@ -101,8 +101,11 @@ impl Display for Stats {
             writeln!(f)?;
             writeln!(f)?;
 
+            let mut sorted_ext: Vec<_> = self.ext.iter().collect();
+            sorted_ext.sort_by(|a, b| b.1.cmp(a.1));
+
             let mut table_items = Vec::default();
-            for (ext, size) in &self.ext {
+            for (ext, size) in sorted_ext {
                 table_items.push(vec![ext.clone(), humanize_byte(*size as f64)]);
             }
             let table = table_items
