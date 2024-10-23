@@ -3,7 +3,9 @@ use cli_table::{print_stdout, Style, Table};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
 use priority_queue::PriorityQueue;
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,42 +14,110 @@ use std::{env, path};
 mod priority_queue;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "dux", version = clap::crate_version!(), version = clap::crate_version!(), author = clap::crate_authors!(), about = clap::crate_description!())]
+#[clap(name = "dux")]
 struct CliArg {
-    #[clap(short('l'), long, about("Lists top 10 largest files"))]
+    /// Lists top 10 largest files
+    #[clap(short('l'), long)]
     list_large_files: bool,
-    #[clap(about("The folder to use (default to current directory)"))]
+
+    /// Group files by extension
+    #[clap(short('g'), long)]
+    group_extensions: bool,
+
+    /// The folder to use (default to current directory)
+    #[clap(name = "path")]
     path: Option<String>,
 }
 
-#[derive(Default)]
 struct Stats {
     size: u64,
     count: i32,
+    ext: HashMap<String, (u64, u64)>, // (size, count)
+    track_ext: bool,
 }
 
 impl Stats {
-    fn from_file(p: &Path) -> Self {
+    pub fn new_empty() -> Self {
         Self {
-            size: p.metadata().unwrap().len(),
-            count: 1,
+            size: 0,
+            count: 0,
+            ext: HashMap::new(),
+            track_ext: false,
         }
     }
 
-    fn add_file(&mut self, p: &Path) -> Result<(), std::io::Error> {
-        let size = p.metadata()?.len();
+    pub fn new(track_ext: bool) -> Self {
+        Self {
+            size: 0,
+            count: 0,
+            ext: HashMap::new(),
+            track_ext,
+        }
+    }
+    fn from_file(path: &Path, track_ext: bool) -> Self {
+        let meta = path.metadata().unwrap();
+        let mut s = Self {
+            size: meta.len(),
+            count: 1,
+            ext: <_>::default(),
+            track_ext,
+        };
+
+        s.add_ext(&meta, path);
+        s
+    }
+
+    fn add_file(&mut self, path: &Path) -> Result<(), std::io::Error> {
+        let meta = path.metadata()?;
+        let size = meta.len();
         self.count += 1;
         self.size += size;
+        self.add_ext(&meta, path);
 
         Ok(())
+    }
+
+    fn add_ext(&mut self, meta: &Metadata, path: &Path) {
+        if meta.is_file() {
+            if let Some(ext) = path.extension() {
+                if let Some(ext) = ext.to_str() {
+                    // add or update size in the hashmap;
+                    let ext = ext.to_string();
+
+                    let (size, count) = self.ext.get(&ext).unwrap_or(&(0, 0));
+                    let info = (size + meta.len(), count + 1);
+                    self.ext.insert(ext.to_string(), info);
+                }
+            }
+        }
     }
 }
 
 impl Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.track_ext && !self.ext.is_empty() {
+            let mut sorted_ext: Vec<_> = self.ext.iter().collect();
+            sorted_ext.sort_by(|a, b| b.1.cmp(a.1));
+
+            let mut table_items = Vec::default();
+            for (ext, (size, count)) in sorted_ext {
+                table_items.push(vec![
+                    ext.clone(),
+                    count.to_string(),
+                    humanize_byte(*size as f64),
+                ]);
+            }
+            let table = table_items
+                .table()
+                .title(vec!["Extension", "#", "Size"])
+                .bold(true);
+            print_stdout(table).expect("failed to print table");
+            writeln!(f)?;
+        }
+
         write!(
             f,
-            "{} bytes ({}) across {} items",
+            "Total size is {} bytes ({}) across {} items",
             self.size,
             humanize_byte(self.size as f64),
             self.count
@@ -59,15 +129,29 @@ impl std::ops::AddAssign for Stats {
     fn add_assign(&mut self, rhs: Self) {
         self.count += rhs.count;
         self.size += rhs.size;
+        if !rhs.ext.is_empty() {
+            for (ext, (size_e, count_e)) in &rhs.ext {
+                let (size_, count_) = rhs.ext.get(ext).unwrap_or(&(0, 0));
+                let info = (size_ + size_e, count_ + count_e);
+                self.ext.insert(ext.clone(), info);
+            }
+        }
     }
 }
 
 impl<'a> std::iter::Sum<&'a Stats> for Stats {
     fn sum<I: Iterator<Item = &'a Stats>>(iter: I) -> Self {
-        let mut result = Self::default();
+        let mut result = Self::new_empty();
         for stat in iter {
             result.count += stat.count;
             result.size += stat.size;
+            if !stat.ext.is_empty() {
+                for (ext, (size_e, count_e)) in &stat.ext {
+                    let (size_, count_) = result.ext.get(ext).unwrap_or(&(0, 0));
+                    let info = (size_ + size_e, count_ + count_e);
+                    result.ext.insert(ext.clone(), info);
+                }
+            }
         }
         result
     }
@@ -91,19 +175,19 @@ fn main() {
     if !path.exists() {
         eprintln!("Invalid path: {}", &target);
     } else if path.is_file() {
-        let stat = Stats::from_file(path);
-        println!("Total size is {}", stat);
+        let stat = Stats::from_file(path, cli_args.group_extensions);
+        println!("{}", stat);
     } else if path.is_dir() {
         // Single threaded
         // let size: f64 = size_of_dir_single_threaded(path) as f64;
-        // println!("Total size is {} bytes ({})", size, convert(size));
+        // println!("{} bytes ({})", size, convert(size));
 
         // Multi threaded
         let cores = num_cpus::get().to_string();
         let cores = std::env::var("WORKERS").unwrap_or(cores).parse().unwrap();
         let stat = size_of_dir(path, cores, &cli_args);
 
-        println!("Total size is {}", stat);
+        println!("{}", stat);
     } else {
         eprintln!("Unknown type {}", target);
     }
@@ -120,18 +204,32 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
             let producer = producer.clone();
             let largest_files = largest_files.clone();
             let track_lage_files = args.list_large_files;
+            let track_ext = args.group_extensions;
             let rx = rx.clone();
 
             consumers.push(std::thread::spawn(move || {
-                worker(idx, rx, &producer, &largest_files, track_lage_files)
+                worker(
+                    idx,
+                    rx,
+                    &producer,
+                    &largest_files,
+                    track_lage_files,
+                    track_ext,
+                )
             }));
         }
 
         // walk the root folder
-        stats.push(walk(path, &producer, &largest_files, args.list_large_files));
+        stats.push(walk(
+            path,
+            &producer,
+            &largest_files,
+            args.list_large_files,
+            args.group_extensions,
+        ));
     } // extra block so the channel is dropped early,
       // therefore all threads waiting for new message will encounter the
-      // exit codition and will run to the end.
+      // exit condition and will run to the end.
 
     // wait for all receiver to finish
     for c in consumers {
@@ -151,7 +249,10 @@ fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
         println!();
     }
 
-    stats.iter().sum()
+    Stats {
+        track_ext: args.group_extensions,
+        ..stats.iter().sum()
+    }
 }
 
 fn truncate(path: &str) -> String {
@@ -176,10 +277,11 @@ fn worker(
     sender: &Sender<PathBuf>,
     large_files: &Arc<Mutex<PriorityQueue>>,
     track_large_files: bool,
+    track_ext: bool,
 ) -> Stats {
-    let mut stat = Stats::default();
+    let mut stat = Stats::new(track_ext);
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
-        let newstat = walk(&path, sender, large_files, track_large_files);
+        let newstat = walk(&path, sender, large_files, track_large_files, track_ext);
         stat += newstat;
     }
 
@@ -191,35 +293,39 @@ fn walk(
     sender: &Sender<PathBuf>,
     large_files: &Arc<Mutex<PriorityQueue>>,
     track_large_files: bool,
+    track_ext: bool,
 ) -> Stats {
-    let mut stat = Stats::default();
+    let mut stat = Stats::new(track_ext);
 
     // Optimisation (makes it faster)
     // if !path.is_dir() {
     //     return;
     // }
-    if let Err(e) = path.read_dir() {
-        eprintln!("Error {} ({})", e, path.to_str().unwrap());
-        return stat;
-    } else if let Ok(dir_items) = path.read_dir() {
-        for entry in dir_items.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                stat.add_file(&path).unwrap();
-                if track_large_files {
-                    let size = path.metadata().unwrap().len();
-                    large_files
-                        .as_ref()
-                        .lock()
-                        .unwrap()
-                        .push(path.to_str().unwrap().into(), size);
+    match path.read_dir() {
+        Ok(dir_items) => {
+            for entry in dir_items.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    stat.add_file(&path).unwrap();
+                    if track_large_files {
+                        let size = path.metadata().unwrap().len();
+                        large_files
+                            .as_ref()
+                            .lock()
+                            .unwrap()
+                            .push(path.to_str().unwrap().into(), size);
+                    }
+                } else if path.is_dir() {
+                    // publish message to the channel
+                    sender.try_send(path).unwrap();
                 }
-            } else if path.is_dir() {
-                // publish message to the channel
-                sender.try_send(path).unwrap();
             }
         }
+        Err(e) => {
+            eprintln!("Error {} ({})", e, path.to_str().unwrap());
+        }
     }
+
     stat
 }
 

@@ -12,7 +12,7 @@ impl Ord for Item {
 }
 impl PartialOrd for Item {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.1.partial_cmp(&other.1)
+        Some(self.cmp(other))
     }
 }
 
