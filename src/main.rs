@@ -2,16 +2,16 @@ use clap::Parser;
 use cli_table::{print_stdout, Style, Table};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pretty_bytes::converter::convert as humanize_byte;
-use priority_queue::PriorityQueue;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::fmt::Display;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{env, path};
+use std::{env, io};
+use thousands::Separable;
 
-mod priority_queue;
+type LargeFilesHeap = BinaryHeap<Reverse<(u64, String)>>;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "dux")]
@@ -29,6 +29,7 @@ struct CliArg {
     path: Option<String>,
 }
 
+#[derive(Default)]
 struct Stats {
     size: u64,
     count: i32,
@@ -37,58 +38,42 @@ struct Stats {
 }
 
 impl Stats {
-    pub fn new_empty() -> Self {
+    fn new(track_ext: bool) -> Self {
         Self {
-            size: 0,
-            count: 0,
-            ext: HashMap::new(),
-            track_ext: false,
+            track_ext,
+            ..Default::default()
         }
     }
 
-    pub fn new(track_ext: bool) -> Self {
-        Self {
-            size: 0,
-            count: 0,
-            ext: HashMap::new(),
-            track_ext,
-        }
-    }
-    fn from_file(path: &Path, track_ext: bool) -> Self {
-        let meta = path.metadata().unwrap();
-        let mut s = Self {
-            size: meta.len(),
+    fn from_file(path: &Path, track_ext: bool) -> io::Result<Self> {
+        let metadata = path.metadata()?;
+        let mut stats = Self {
+            size: metadata.len(),
             count: 1,
-            ext: <_>::default(),
             track_ext,
+            ..Default::default()
         };
-
-        s.add_ext(&meta, path);
-        s
+        stats.add_extension(&metadata, path);
+        Ok(stats)
     }
 
-    fn add_file(&mut self, path: &Path) -> Result<(), std::io::Error> {
-        let meta = path.metadata()?;
-        let size = meta.len();
+    fn add_file(&mut self, path: &Path) -> io::Result<Metadata> {
+        let metadata = path.metadata()?;
+        self.size += metadata.len();
         self.count += 1;
-        self.size += size;
-        self.add_ext(&meta, path);
-
-        Ok(())
+        self.add_extension(&metadata, path);
+        Ok(metadata)
     }
 
-    fn add_ext(&mut self, meta: &Metadata, path: &Path) {
-        if meta.is_file() {
-            if let Some(ext) = path.extension() {
-                if let Some(ext) = ext.to_str() {
-                    // add or update size in the hashmap;
-                    let ext = ext.to_string();
+    fn add_extension(&mut self, metadata: &Metadata, path: &Path) {
+        if !self.track_ext || !metadata.is_file() {
+            return;
+        }
 
-                    let (size, count) = self.ext.get(&ext).unwrap_or(&(0, 0));
-                    let info = (size + meta.len(), count + 1);
-                    self.ext.insert(ext.to_string(), info);
-                }
-            }
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let (size, count) = self.ext.get(ext).copied().unwrap_or_default();
+            self.ext
+                .insert(ext.to_string(), (size + metadata.len(), count + 1));
         }
     }
 }
@@ -99,14 +84,13 @@ impl Display for Stats {
             let mut sorted_ext: Vec<_> = self.ext.iter().collect();
             sorted_ext.sort_by(|a, b| b.1.cmp(a.1));
 
-            let mut table_items = Vec::default();
-            for (ext, (size, count)) in sorted_ext {
-                table_items.push(vec![
-                    ext.clone(),
-                    count.to_string(),
-                    humanize_byte(*size as f64),
-                ]);
-            }
+            let table_items: Vec<_> = sorted_ext
+                .into_iter()
+                .map(|(ext, (size, count))| {
+                    vec![ext.clone(), count.to_string(), humanize_byte(*size as f64)]
+                })
+                .collect();
+
             let table = table_items
                 .table()
                 .title(vec!["Extension", "#", "Size"])
@@ -118,9 +102,9 @@ impl Display for Stats {
         write!(
             f,
             "Total size is {} bytes ({}) across {} items",
-            self.size,
+            self.size.separate_with_commas(),
             humanize_byte(self.size as f64),
-            self.count
+            self.count.separate_with_commas()
         )
     }
 }
@@ -129,130 +113,139 @@ impl std::ops::AddAssign for Stats {
     fn add_assign(&mut self, rhs: Self) {
         self.count += rhs.count;
         self.size += rhs.size;
-        if !rhs.ext.is_empty() {
-            for (ext, (size_e, count_e)) in &rhs.ext {
-                let (size_, count_) = rhs.ext.get(ext).unwrap_or(&(0, 0));
-                let info = (size_ + size_e, count_ + count_e);
-                self.ext.insert(ext.clone(), info);
-            }
+
+        for (ext, (size, count)) in rhs.ext {
+            let (existing_size, existing_count) = self.ext.get(&ext).copied().unwrap_or_default();
+            self.ext
+                .insert(ext, (existing_size + size, existing_count + count));
         }
     }
 }
 
 impl<'a> std::iter::Sum<&'a Stats> for Stats {
     fn sum<I: Iterator<Item = &'a Stats>>(iter: I) -> Self {
-        let mut result = Self::new_empty();
-        for stat in iter {
-            result.count += stat.count;
-            result.size += stat.size;
-            if !stat.ext.is_empty() {
-                for (ext, (size_e, count_e)) in &stat.ext {
-                    let (size_, count_) = result.ext.get(ext).unwrap_or(&(0, 0));
-                    let info = (size_ + size_e, count_ + count_e);
-                    result.ext.insert(ext.clone(), info);
-                }
-            }
+        iter.fold(Stats::default(), |mut acc, stat| {
+            acc += stat.clone();
+            acc
+        })
+    }
+}
+
+impl Clone for Stats {
+    fn clone(&self) -> Self {
+        Self {
+            size: self.size,
+            count: self.count,
+            ext: self.ext.clone(),
+            track_ext: self.track_ext,
         }
-        result
     }
 }
 
 fn main() {
     let cli_args = CliArg::parse();
-
-    let target = cli_args.path.clone().unwrap_or_else(|| {
-        env::current_dir()
-            .expect("")
-            .to_str()
-            .expect("")
-            .to_string()
-    });
-    let path = path::Path::new(&target);
+    let target = get_target_path(&cli_args);
 
     #[cfg(debug_assertions)]
     println!("Searching in path: {}", target);
 
-    if !path.exists() {
-        eprintln!("Invalid path: {}", &target);
-    } else if path.is_file() {
-        let stat = Stats::from_file(path, cli_args.group_extensions);
-        println!("{}", stat);
-    } else if path.is_dir() {
-        // Single threaded
-        // let size: f64 = size_of_dir_single_threaded(path) as f64;
-        // println!("{} bytes ({})", size, convert(size));
-
-        // Multi threaded
-        let cores = num_cpus::get().to_string();
-        let cores = std::env::var("WORKERS").unwrap_or(cores).parse().unwrap();
-        let stat = size_of_dir(path, cores, &cli_args);
-
-        println!("{}", stat);
-    } else {
-        eprintln!("Unknown type {}", target);
+    let path = Path::new(&target);
+    match classify_path(path) {
+        PathType::NotFound => eprintln!("Invalid path: {}", target),
+        PathType::File => match Stats::from_file(path, cli_args.group_extensions) {
+            Ok(stats) => println!("{}", stats),
+            Err(e) => eprintln!("Error reading file: {}", e),
+        },
+        PathType::Directory => {
+            let cores = get_worker_count();
+            let stats = size_of_dir(path, cores, &cli_args);
+            println!("{}", stats);
+        }
+        PathType::Unknown => eprintln!("Unknown type {}", target),
     }
 }
 
-fn size_of_dir(path: &path::Path, num_threads: usize, args: &CliArg) -> Stats {
-    let mut stats = Vec::new();
-    let largest_files = Arc::new(Mutex::new(PriorityQueue::new(10)));
-    let mut consumers = Vec::new();
-    {
-        let (producer, rx) = unbounded();
+enum PathType {
+    NotFound,
+    File,
+    Directory,
+    Unknown,
+}
 
-        for idx in 0..num_threads {
-            let producer = producer.clone();
-            let largest_files = largest_files.clone();
-            let track_lage_files = args.list_large_files;
-            let track_ext = args.group_extensions;
-            let rx = rx.clone();
+fn classify_path(path: &Path) -> PathType {
+    if !path.exists() {
+        PathType::NotFound
+    } else if path.is_file() {
+        PathType::File
+    } else if path.is_dir() {
+        PathType::Directory
+    } else {
+        PathType::Unknown
+    }
+}
 
-            consumers.push(std::thread::spawn(move || {
-                worker(
-                    idx,
-                    rx,
-                    &producer,
-                    &largest_files,
-                    track_lage_files,
-                    track_ext,
-                )
-            }));
-        }
+fn get_target_path(cli_args: &CliArg) -> String {
+    cli_args.path.clone().unwrap_or_else(|| {
+        env::current_dir()
+            .expect("Failed to get current directory")
+            .to_string_lossy()
+            .to_string()
+    })
+}
 
-        // walk the root folder
-        stats.push(walk(
-            path,
-            &producer,
-            &largest_files,
-            args.list_large_files,
-            args.group_extensions,
-        ));
-    } // extra block so the channel is dropped early,
-      // therefore all threads waiting for new message will encounter the
-      // exit condition and will run to the end.
+fn get_worker_count() -> usize {
+    env::var("WORKERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(num_cpus::get)
+}
 
-    // wait for all receiver to finish
-    for c in consumers {
-        let stat = c.join().unwrap();
-        stats.push(stat);
+fn size_of_dir(path: &Path, num_threads: usize, args: &CliArg) -> Stats {
+    let (sender, receiver) = unbounded();
+
+    let consumers: Vec<_> = (0..num_threads)
+        .map(|idx| {
+            let sender = sender.clone();
+            let receiver = receiver.clone();
+            let args = args.clone();
+
+            std::thread::spawn(move || worker(idx, receiver, &sender, &args))
+        })
+        .collect();
+
+    let (root_stats, mut root_files) = walk(path, &sender, args);
+    drop(sender); // Signal threads to exit
+
+    let mut all_stats = vec![root_stats];
+    for consumer in consumers {
+        let (stats, files) = consumer.join().expect("Worker thread panicked");
+        all_stats.push(stats);
+        merge_largest_files(&mut root_files, files);
     }
 
     if args.list_large_files {
-        println!("Largest files:");
-        let wd_len = path.to_str().unwrap().len() + 1;
-        let mut table_items = Vec::default();
-        for (path, size) in largest_files.lock().unwrap().get() {
-            table_items.push(vec![humanize_byte(size as f64), truncate(&path[wd_len..])]);
-        }
-        let table = table_items.table().title(vec!["Size", "File"]).bold(true);
-        print_stdout(table).expect("failed to print largest files");
-        println!();
+        print_largest_files(&root_files, path);
     }
 
     Stats {
         track_ext: args.group_extensions,
-        ..stats.iter().sum()
+        ..all_stats.iter().sum()
     }
+}
+
+fn print_largest_files(largest_files: &LargeFilesHeap, root_path: &Path) {
+    println!("Largest files:");
+    let wd_len = root_path.to_string_lossy().len() + 1;
+
+    let files: Vec<_> = largest_files.clone().into_sorted_vec();
+    let table_items: Vec<_> = files
+        .into_iter()
+        .map(|Reverse((size, path))| vec![humanize_byte(size as f64), truncate(&path[wd_len..])])
+        .collect();
+
+    let table = table_items.table().title(vec!["Size", "File"]).bold(true);
+    print_stdout(table).expect("Failed to print largest files");
+    println!();
 }
 
 fn truncate(path: &str) -> String {
@@ -260,89 +253,71 @@ fn truncate(path: &str) -> String {
     if path.len() <= MAX_WIDTH {
         return path.to_string();
     }
+
     let mid = std::cmp::min(path.len() / 2, MAX_WIDTH / 2);
-
-    let mut result = String::new();
-    result.push_str(&path[..mid]);
-    result.push_str("...");
-    result.push_str(&path[path.len() - mid..]);
-
-    result
+    format!("{}...{}", &path[..mid], &path[path.len() - mid..])
 }
 
-#[allow(unused_variables)]
 fn worker(
-    idx: usize,
+    _idx: usize,
     receiver: Receiver<PathBuf>,
     sender: &Sender<PathBuf>,
-    large_files: &Arc<Mutex<PriorityQueue>>,
-    track_large_files: bool,
-    track_ext: bool,
-) -> Stats {
-    let mut stat = Stats::new(track_ext);
+    args: &CliArg,
+) -> (Stats, LargeFilesHeap) {
+    let mut stats = Stats::new(args.group_extensions);
+    let mut large_files = BinaryHeap::new();
+
     while let Ok(path) = receiver.recv_timeout(Duration::from_millis(50)) {
-        let newstat = walk(&path, sender, large_files, track_large_files, track_ext);
-        stat += newstat;
+        let (path_stats, path_files) = walk(&path, sender, args);
+        stats += path_stats;
+        merge_largest_files(&mut large_files, path_files);
     }
 
-    stat
+    (stats, large_files)
 }
 
-fn walk(
-    path: &path::Path,
-    sender: &Sender<PathBuf>,
-    large_files: &Arc<Mutex<PriorityQueue>>,
-    track_large_files: bool,
-    track_ext: bool,
-) -> Stats {
-    let mut stat = Stats::new(track_ext);
+fn walk(path: &Path, sender: &Sender<PathBuf>, args: &CliArg) -> (Stats, LargeFilesHeap) {
+    let mut stats = Stats::new(args.group_extensions);
+    let mut large_files = BinaryHeap::new();
 
-    // Optimisation (makes it faster)
-    // if !path.is_dir() {
-    //     return;
-    // }
-    match path.read_dir() {
-        Ok(dir_items) => {
-            for entry in dir_items.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    stat.add_file(&path).unwrap();
-                    if track_large_files {
-                        let size = path.metadata().unwrap().len();
-                        large_files
-                            .as_ref()
-                            .lock()
-                            .unwrap()
-                            .push(path.to_str().unwrap().into(), size);
-                    }
-                } else if path.is_dir() {
-                    // publish message to the channel
-                    sender.try_send(path).unwrap();
+    let entries = match path.read_dir() {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path.display(), e);
+            return (stats, large_files);
+        }
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+
+        if entry_path.is_file() {
+            if let Ok(metadata) = stats.add_file(&entry_path) {
+                if args.list_large_files {
+                    track_large_file(&mut large_files, &entry_path, metadata.len());
                 }
             }
-        }
-        Err(e) => {
-            eprintln!("Error {} ({})", e, path.to_str().unwrap());
+        } else if entry_path.is_dir() {
+            let _ = sender.try_send(entry_path);
         }
     }
 
-    stat
+    (stats, large_files)
 }
 
-#[allow(dead_code)]
-fn size_of_dir_single_threaded(path: &path::Path) -> u64 {
-    if !path.is_dir() {
-        return 0;
-    }
+fn track_large_file(large_files: &mut LargeFilesHeap, path: &Path, size: u64) {
+    large_files.push(Reverse((size, path.to_string_lossy().to_string())));
 
-    let mut count = 0;
-    for entry in path.read_dir().expect("Read dir").flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            count += path.metadata().unwrap().len();
-        } else if path.is_dir() {
-            count += size_of_dir_single_threaded(&path);
+    if large_files.len() > 10 {
+        large_files.pop();
+    }
+}
+
+fn merge_largest_files(target: &mut LargeFilesHeap, source: LargeFilesHeap) {
+    for item in source {
+        target.push(item);
+        if target.len() > 10 {
+            target.pop();
         }
     }
-    count
 }
