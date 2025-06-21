@@ -52,30 +52,7 @@ OPTIONS:
 ```
 
 ## Performance
-For smaller directory, the performance is on-par or better than `du` (I have no idea why!)
-
-```bash
-$ time du -hd 0
-126G    .
-du -hd 0  0.01s user 0.04s system 47% cpu 0.088 total
-
-$ time dux
-Total size is 129930609382 bytes (129.93 GB) across 159 items
-dux  0.00s user 0.01s system 51% cpu 0.024 total
-```
-
-but for larger folder `du` is `3x` faster at least,
-
-```bash
-$ time du -hd 0
-699M    .
-du -hd 0  0.05s user 0.67s system 48% cpu 1.498 total
-
-$ time dux     
-Total size is 666559986 bytes (666.56 MB) across 31623 items
-dux  0.21s user 3.16s system 76% cpu 4.390 total
-
-```
+See [Benchmark](BENCH.md)
 
 ## Suggestions
 
